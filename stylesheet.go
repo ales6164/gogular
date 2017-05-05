@@ -3,13 +3,17 @@ package gogular
 import (
 	"github.com/aymerick/douceur/css"
 	"golang.org/x/net/html"
-	"io/ioutil"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/aymerick/douceur/parser"
+	"fmt"
+	"io"
+	"github.com/tdewolff/minify"
+	css_min "github.com/tdewolff/minify/css"
 )
 
-type Stylesheet struct {
-	Path string
+type Style struct {
+	Shadow       bool
+	*File
 	*css.Stylesheet
 	NodePointers []NodeRule
 }
@@ -19,31 +23,24 @@ type NodeRule struct {
 	*css.Rule
 }
 
-func ParseStylesheet(dir string, urls ...string) *Stylesheet {
-	sheet := &Stylesheet{}
-	cssString := ""
+func (a *App) NewStyle(fileName string, dir string, shadow bool) *Style {
+	f := NewFile(CSS, fileName, dir, a.TmpDirectory)
 
-	for _, url := range urls {
-		styleBytes, err := ioutil.ReadFile(dir + "/" + url)
-		if err != nil {
-			ConsoleLog(err)
-		}
-		cssString += string(styleBytes) + "\n"
-	}
-
-	cssStylesheet, err := parser.Parse(cssString)
-	if err != nil {
-		ConsoleLog(err)
-	}
-
-	// Get nodes and corresponding css rules
-	sheet.Stylesheet = cssStylesheet
-	sheet.NodePointers = []NodeRule{}
-
-	return sheet
+	return &Style{Shadow: shadow, File: f}
 }
 
-func (s *Stylesheet) EmbedNode(node *html.Node) {
+func (s *Style) Parse() {
+	buf := s.OpenFileBuffer()
+
+	cssStyle, err := parser.Parse(buf.String())
+	if err != nil {
+		fmt.Print(err)
+	}
+
+	s.Stylesheet = cssStyle
+}
+
+func (s *Style) EmbedNodes(node *html.Node) {
 	docQuery := goquery.NewDocumentFromNode(node)
 	for _, rule := range s.Rules {
 		docQuery.Find(rule.Prelude).Each(func(i int, sel *goquery.Selection) {
@@ -54,10 +51,38 @@ func (s *Stylesheet) EmbedNode(node *html.Node) {
 	}
 }
 
-func (s *Stylesheet) RenderShadow() string {
+func (s *Style) CompileToFile(destDir string, originalName bool) {
+	pr, pw := io.Pipe()
+
+	go func() {
+		if s.Shadow {
+			s.renderShadow(pw)
+		} else {
+			s.render(pw)
+		}
+		pw.Close()
+	}()
+
+	s.WriteFile(destDir, originalName, pr)
+}
+
+func (s *Style) Minify(destDir string, originalName bool) {
+	m := minify.New()
+	m.AddFunc("text/css", css_min.Minify)
+
+	oldF := s.GetFile()
+	newF := s.GetNewFile(destDir, originalName)
+
+	go func() {
+		if err := m.Minify("text/css", newF, oldF); err != nil {
+			fmt.Print(err)
+		}
+	}()
+}
+
+func (s *Style) renderShadow(writer *io.PipeWriter) {
 	classNames := map[string]bool{}
 	ruleMap := map[*css.Rule]string{}
-	stylesheetString := ""
 
 	for _, styleRule := range s.NodePointers {
 		className, ok := ruleMap[styleRule.Rule]
@@ -78,20 +103,15 @@ func (s *Stylesheet) RenderShadow() string {
 
 			dr.Prelude = "." + className
 			dr.Selectors = []string{dr.Prelude}
-			stylesheetString += dr.String() + "\n"
+
+			writer.Write([]byte(dr.String() + "\n"))
 		}
 		styleRule.Node.Attr = append(styleRule.Node.Attr, html.Attribute{Key: "class", Val: className})
 	}
-
-	return stylesheetString
 }
 
-func (s *Stylesheet) Render() string {
-	stylesheetString := ""
-
+func (s *Style) render(writer *io.PipeWriter) {
 	for _, styleRule := range s.NodePointers {
-		stylesheetString += styleRule.Rule.String()
+		writer.Write([]byte(styleRule.Rule.String() + "\n"))
 	}
-
-	return stylesheetString
 }

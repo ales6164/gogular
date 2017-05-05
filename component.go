@@ -2,28 +2,28 @@ package gogular
 
 import (
 	"io"
-	"strings"
 	"golang.org/x/net/html"
 	"bytes"
 	"html/template"
-	"os"
-	"encoding/json"
-	"io/ioutil"
+	"fmt"
+	"net/http"
+	"strings"
 )
 
 type TagType int
 type AttributeType int
 
 type Component struct {
-	Directory     string
+	App           *App
 	Configuration *ComponentConfiguration
 
-	*Stylesheet
-}
+	Node     *html.Node
+	Template *template.Template
+	*ComponentData
 
-type ComponentData struct {
-	Attr    map[string]string
-	Content template.HTML
+	Styles []*Style
+
+	*File
 }
 
 type ComponentConfiguration struct {
@@ -36,112 +36,179 @@ type ComponentConfiguration struct {
 	StyleUrls []string
 }
 
-func (c *Component) ReadConfiguration() {
-	file, err := os.Open(c.Directory + "/config.json")
-	if err != nil {
-		ConsoleLog(err)
-	}
-
-	decoder := json.NewDecoder(file)
-
-	c.Configuration = new(ComponentConfiguration)
-	err = decoder.Decode(c.Configuration)
-	if err != nil {
-		ConsoleLog(err)
-	}
+type ComponentData struct {
+	Attributes map[string]string
+	Content    template.HTML
 }
 
-func (c *Component) GetNode(attrs []html.Attribute, content string) (*html.Node, *Stylesheet) {
+func (a *App) NewComponent(dir string, shadow bool) *Component {
+	component := Component{}
 
-	// Parse template from original file
-	t := c.ParseTemplate()
+	component.Configuration = &ComponentConfiguration{}
+	readConfiguration(dir+"/config.json", component.Configuration)
 
-	// Insert data to parsed template
-	d := c.AddTemplateData(attrs, content)
+	component.ComponentData = &ComponentData{}
+	component.File = NewFile(HTML, component.Configuration.TemplateUrl, dir, a.TmpDirectory)
 
-	// Get template string
-	temp := c.ExecuteTemplate(t, d)
+	component.Styles = []*Style{}
+	for _, fileName := range component.Configuration.StyleUrls {
+		s := a.NewStyle(fileName, dir, shadow)
+		s.Parse()
+		component.Styles = append(component.Styles, s)
+	}
 
-	node := c.ParseTemplateString(temp)
+	component.App = a
 
-	c.Stylesheet.EmbedNode(node)
+	component.Parse()
 
-	return node, c.Stylesheet
+	return &component
 }
 
-func (c *Component) ParseTemplateString(temp string) *html.Node {
-	htmlTemplate := "<template>" + temp + "</template>"
+func (c *Component) Parse() {
+	var err error
+	buf := c.OpenFileBuffer()
+	str := "<template>" + buf.String() + "</template>"
 
 	var r io.Reader
-	r = strings.NewReader(htmlTemplate)
+	r = strings.NewReader(str)
 
-	doc, err := html.Parse(r)
+	// Parse component
+	c.Node, err = html.Parse(r)
 	if err != nil {
-		ConsoleLog(err)
+		fmt.Print(err)
 	}
 
 	var f func(*html.Node)
-
 	f = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "template" {
-			doc = n
+			c.Node = n
 			return
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			f(c)
 		}
 	}
-	f(doc)
+	f(c.Node)
 
-	return doc
+	c.EmbedStyles()
 }
 
-/**
-	Prepare and parse HTML component file
-	- Adds functions for retrieving and modifying data
- */
-func (c *Component) ParseTemplate() *template.Template {
-	var templateString string = c.Configuration.Template
+func (comp *Component) LoadTree(node *html.Node) {
+	if node.Type == html.ElementNode {
+		// Check if the tag name belongs to components selector
+		if component, isComponent := comp.App.Components[node.Data]; isComponent {
+			// Replace current node with corresponding component
 
-	if len(c.Configuration.TemplateUrl) > 0 {
-		file, err := ioutil.ReadFile(c.Directory + "/" + c.Configuration.TemplateUrl)
-		if err != nil {
-			ConsoleLog(err)
+			if component.Attributes != nil {
+				component.Attributes = map[string]string{}
+
+				for _, attr := range node.Attr {
+					component.Attributes[attr.Key] = attr.Val
+				}
+
+				// Write node content to string
+				contentWriter := new(bytes.Buffer)
+				var f func(*html.Node)
+				f = func(n *html.Node) {
+					if n.Parent == node {
+						html.Render(contentWriter, n)
+					}
+					for c := n.FirstChild; c != nil; c = c.NextSibling {
+						f(c)
+					}
+				}
+				f(node)
+				component.Content = template.HTML(contentWriter.String())
+
+				// Remove node content
+				nodesToRemove := []*html.Node{}
+				f = func(n *html.Node) {
+					if n.Parent == node {
+						nodesToRemove = append(nodesToRemove, n)
+					}
+					for c := n.FirstChild; c != nil; c = c.NextSibling {
+						f(c)
+					}
+				}
+				f(node)
+				for _, nodeToRemove := range nodesToRemove {
+					nodeToRemove.Parent.RemoveChild(nodeToRemove)
+				}
+
+				// Get template node tree
+
+				comp.Styles = append(comp.Styles, component.Styles...)
+
+				// Get component direct node children
+				componentChildren := []*html.Node{}
+				f = func(n *html.Node) {
+					if n.Parent == component.Node {
+						componentChildren = append(componentChildren, n)
+					}
+
+					for c := n.FirstChild; c != nil; c = c.NextSibling {
+						f(c)
+					}
+				}
+				f(component.Node)
+
+				nodeParent := node.Parent
+
+				// Add component node children to original node
+				for _, componentNode := range componentChildren {
+					componentNode.Parent = nil
+					componentNode.NextSibling = nil
+					componentNode.PrevSibling = nil
+
+					nodeParent.AppendChild(componentNode)
+				}
+
+				// Remove original node
+				nodeParent.RemoveChild(node)
+
+				component.LoadTree(nodeParent)
+			}
+
+
 		}
-		templateString = string(file)
 	}
-
-	templateString = `{{define "` + c.Configuration.Selector + `"}}` + templateString + `{{end}}`
-	t, _ := template.New(c.Configuration.Selector).Parse(templateString)
-
-	return t
+	for cN := node.FirstChild; cN != nil; cN = cN.NextSibling {
+		comp.LoadTree(cN)
+	}
 }
 
-/**
-	Executes component using go template library
-	- Adds user data
-	- Stylizes the HTML
- */
-func (c *Component) ExecuteTemplate(template *template.Template, data *ComponentData) string {
-	temp := new(bytes.Buffer)
+func (c *Component) EmbedStyles() {
+	for _, style := range c.Styles {
+		style.EmbedNodes(c.Node)
+	}
+}
 
-	err := template.Execute(temp, data)
+func (c *Component) CompileToFile(destDir string, originalName bool) {
+	f := c.GetNewFile(destDir, originalName)
+	defer f.Close()
+	err := html.Render(f, c.Node)
 	if err != nil {
-		ConsoleLog(err)
+		fmt.Print(err)
 	}
-
-	return temp.String()
 }
 
-func (c *Component) AddTemplateData(attrs []html.Attribute, content string) *ComponentData {
-	data := &ComponentData{
-		Attr:    map[string]string{},
-		Content: template.HTML(content),
-	}
+func (c *Component) PreLoad() {
+	tempStr := `{{define "` + c.Configuration.Selector + `"}}` + c.File.String() + `{{end}}`
 
-	for _, attr := range attrs {
-		data.Attr[attr.Key] = attr.Val
-	}
+	f := c.GetNewFile(c.App.DistDirectory, true)
+	defer f.Close()
+	f.Write([]byte(tempStr))
+}
 
-	return data
+func (c *Component) Execute(w http.ResponseWriter) {
+	var err error
+	c.Template, err = template.New(c.Configuration.Selector).Parse(c.File.String())
+	if err != nil {
+		fmt.Print(err)
+	}
+	c.Template.Execute(w, c.ComponentData)
+}
+
+func (c *Component) render(w *io.PipeWriter) {
+
 }

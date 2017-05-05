@@ -3,6 +3,7 @@ package gogular
 import (
 	"os"
 	"strconv"
+	"fmt"
 )
 
 /**
@@ -34,11 +35,11 @@ func (a *Analysis) LogSize(name string, f1 *os.File, f2 *os.File) {
 
 	f1s, err := f1.Stat()
 	if err != nil {
-		ConsoleLog(err)
+		fmt.Print(err)
 	}
 	f2s, err := f2.Stat()
 	if err != nil {
-		ConsoleLog(err)
+		fmt.Print(err)
 	}
 
 	if f1s != nil {
@@ -64,9 +65,9 @@ func (a *Analysis) LogSize(name string, f1 *os.File, f2 *os.File) {
 }
 
 func (a *Analysis) String() {
-	ConsoleLog("Analysis")
+	fmt.Print("Analysis")
 	for _, t := range a.Tasks {
 		impr := strconv.FormatFloat(t.Improvement, 'f', 6, 32)
-		ConsoleLog("Task: " + t.Task + ", Size improvement: " + impr)
+		fmt.Print("Task: " + t.Task + ", Size improvement: " + impr)
 	}
 }
