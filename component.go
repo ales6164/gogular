@@ -3,11 +3,9 @@ package gogular
 import (
 	"io"
 	"golang.org/x/net/html"
-	"bytes"
 	"html/template"
 	"fmt"
-	"net/http"
-	"strings"
+	"github.com/PuerkitoBio/goquery"
 )
 
 type TagType int
@@ -17,13 +15,15 @@ type Component struct {
 	App           *App
 	Configuration *ComponentConfiguration
 
-	Node     *html.Node
-	Template *template.Template
-	*ComponentData
+	Id string
+
+	Document *goquery.Document
 
 	Styles []*Style
+	*TmpFile
 
-	*File
+	KeepBodyWrapper bool
+	AppendStyles    bool
 }
 
 type ComponentConfiguration struct {
@@ -34,181 +34,154 @@ type ComponentConfiguration struct {
 
 	Styles    []string
 	StyleUrls []string
+	Shadow    bool
 }
 
-type ComponentData struct {
-	Attributes map[string]string
-	Content    template.HTML
+type Data struct {
+	Attr map[string]string
 }
 
-func (a *App) NewComponent(dir string, shadow bool) *Component {
-	component := Component{}
+func newId(i int) string {
+	id := ""
 
-	component.Configuration = &ComponentConfiguration{}
-	readConfiguration(dir+"/config.json", component.Configuration)
-
-	component.ComponentData = &ComponentData{}
-	component.File = NewFile(HTML, component.Configuration.TemplateUrl, dir, a.TmpDirectory)
-
-	component.Styles = []*Style{}
-	for _, fileName := range component.Configuration.StyleUrls {
-		s := a.NewStyle(fileName, dir, shadow)
-		s.Parse()
-		component.Styles = append(component.Styles, s)
+	if i < len(letterBytes) {
+		id += string(letterBytes[i])
+		return id
 	}
 
-	component.App = a
+	id += string(letterBytes[i%len(letterBytes)])
+	i -= len(letterBytes)
 
-	component.Parse()
+	return newId(i) + id
+}
 
-	return &component
+func (a *App) NewComponent(dir string, conf *ComponentConfiguration) *Component {
+	c := &Component{}
+
+	c.Configuration = conf
+
+	c.TmpFile = a.NewTempFile(dir + "/" + conf.TemplateUrl)
+
+	c.Id = newId(a.LastComponentIndex)
+
+	a.LastComponentIndex++
+
+	c.Styles = []*Style{}
+	for _, fileName := range c.Configuration.StyleUrls {
+		s := a.NewStyle(fileName, dir, c.Configuration.Shadow)
+		s.Parse()
+		c.Styles = append(c.Styles, s)
+	}
+
+	c.App = a
+
+	c.Parse()
+	// 1. Get styling in order
+	c.EmbedStyles()
+
+	return c
 }
 
 func (c *Component) Parse() {
 	var err error
-	buf := c.OpenFileBuffer()
-	str := "<template>" + buf.String() + "</template>"
 
-	var r io.Reader
-	r = strings.NewReader(str)
+	f := c.Open()
+	defer f.Close()
 
-	// Parse component
-	c.Node, err = html.Parse(r)
+	doc, err := goquery.NewDocumentFromReader(f)
 	if err != nil {
-		fmt.Print(err)
+		fmt.Println(err)
 	}
 
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "template" {
-			c.Node = n
-			return
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
-		}
-	}
-	f(c.Node)
-
-	c.EmbedStyles()
+	c.Document = doc
 }
 
-func (comp *Component) LoadTree(node *html.Node) {
-	if node.Type == html.ElementNode {
-		// Check if the tag name belongs to components selector
-		if component, isComponent := comp.App.Components[node.Data]; isComponent {
-			// Replace current node with corresponding component
+/**
+	Compiles components
+ */
+func (c *Component) Execute(data Data) {
+	// Get to the last component first
 
-			if component.Attributes != nil {
-				component.Attributes = map[string]string{}
+	c.Document.Find("*").Each(func(_ int, s *goquery.Selection) {
+		node := s.Nodes[0]
+		if node.Type == html.ElementNode {
+			if c2, is := c.App.Components[node.Data]; is {
+				data := Data{}
+				data.Attr = getAttributes(node.Attr)
 
-				for _, attr := range node.Attr {
-					component.Attributes[attr.Key] = attr.Val
-				}
+				c2.Document.Find("content").First().ReplaceWithSelection(s.Children())
 
-				// Write node content to string
-				contentWriter := new(bytes.Buffer)
-				var f func(*html.Node)
-				f = func(n *html.Node) {
-					if n.Parent == node {
-						html.Render(contentWriter, n)
-					}
-					for c := n.FirstChild; c != nil; c = c.NextSibling {
-						f(c)
-					}
-				}
-				f(node)
-				component.Content = template.HTML(contentWriter.String())
+				c2.Execute(data)
 
-				// Remove node content
-				nodesToRemove := []*html.Node{}
-				f = func(n *html.Node) {
-					if n.Parent == node {
-						nodesToRemove = append(nodesToRemove, n)
-					}
-					for c := n.FirstChild; c != nil; c = c.NextSibling {
-						f(c)
-					}
-				}
-				f(node)
-				for _, nodeToRemove := range nodesToRemove {
-					nodeToRemove.Parent.RemoveChild(nodeToRemove)
-				}
+				c.Styles = append(c.Styles, c2.Styles...)
 
-				// Get template node tree
+				buf := c2.TmpFile.GetBuffer()
 
-				comp.Styles = append(comp.Styles, component.Styles...)
-
-				// Get component direct node children
-				componentChildren := []*html.Node{}
-				f = func(n *html.Node) {
-					if n.Parent == component.Node {
-						componentChildren = append(componentChildren, n)
-					}
-
-					for c := n.FirstChild; c != nil; c = c.NextSibling {
-						f(c)
-					}
-				}
-				f(component.Node)
-
-				nodeParent := node.Parent
-
-				// Add component node children to original node
-				for _, componentNode := range componentChildren {
-					componentNode.Parent = nil
-					componentNode.NextSibling = nil
-					componentNode.PrevSibling = nil
-
-					nodeParent.AppendChild(componentNode)
-				}
-
-				// Remove original node
-				nodeParent.RemoveChild(node)
-
-				component.LoadTree(nodeParent)
+				s.ReplaceWithHtml(buf.String())
 			}
-
-
 		}
+	})
+
+	//fmt.Println(c.Configuration.Selector, c.ReadStyles())
+
+	f := c.Create()
+	defer f.Close()
+
+	c.ExecuteTemplate(f, data)
+}
+
+func getAttributes(attrs []html.Attribute) map[string]string {
+	attrMap := map[string]string{}
+	for _, attr := range attrs {
+		attrMap[attr.Key] = attr.Val
 	}
-	for cN := node.FirstChild; cN != nil; cN = cN.NextSibling {
-		comp.LoadTree(cN)
-	}
+	return attrMap
 }
 
 func (c *Component) EmbedStyles() {
 	for _, style := range c.Styles {
-		style.EmbedNodes(c.Node)
+		style.EmbedNodes(c.Id, c.Document)
 	}
 }
 
-func (c *Component) CompileToFile(destDir string, originalName bool) {
-	f := c.GetNewFile(destDir, originalName)
-	defer f.Close()
-	err := html.Render(f, c.Node)
+const (
+	trailStart = "<html><head></head><body>"
+	trailEnd   = "</body></html>"
+)
+
+func (c *Component) ReadStyles() string {
+	style := ""
+	for _, s := range c.Styles {
+		style += s.Stylesheet.String()
+	}
+	return style
+}
+
+func (c *Component) ExecuteTemplate(w io.Writer, data Data) {
+	if c.AppendStyles {
+		style := c.ReadStyles()
+		c.Document.Find("head").AppendHtml("<style>" + style + "</style>")
+	}
+
+	doc, err := c.Document.Html()
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	if !c.KeepBodyWrapper {
+		if doc[:len(trailStart)] == trailStart {
+			doc = doc[len(trailStart):]
+		}
+		if doc[len(doc)-len(trailEnd):] == trailEnd {
+			doc = doc[:len(doc)-len(trailEnd)]
+		}
+	}
+
+	s1 := `{{define "` + c.Configuration.Selector + `"}}` + doc + `{{end}}`
+
+	t, err := template.New(c.Configuration.Selector).Parse(s1)
 	if err != nil {
 		fmt.Print(err)
 	}
-}
-
-func (c *Component) PreLoad() {
-	tempStr := `{{define "` + c.Configuration.Selector + `"}}` + c.File.String() + `{{end}}`
-
-	f := c.GetNewFile(c.App.DistDirectory, true)
-	defer f.Close()
-	f.Write([]byte(tempStr))
-}
-
-func (c *Component) Execute(w http.ResponseWriter) {
-	var err error
-	c.Template, err = template.New(c.Configuration.Selector).Parse(c.File.String())
-	if err != nil {
-		fmt.Print(err)
-	}
-	c.Template.Execute(w, c.ComponentData)
-}
-
-func (c *Component) render(w *io.PipeWriter) {
-
+	t.Execute(w, data)
 }

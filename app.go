@@ -13,11 +13,13 @@ type App struct {
 
 	*mux.Router
 
-	Components map[string]*Component
+	Components map[string]Component
 
 	Directory     string
 	DistDirectory string
 	TmpDirectory  string
+
+	LastComponentIndex int
 }
 
 type Configuration struct {
@@ -48,26 +50,56 @@ func NewApp(appDir string) *App {
 	app.Configuration = &Configuration{}
 	readConfiguration(appDir+"/config.json", app.Configuration)
 
-	app.Components = map[string]*Component{}
+	app.Components = map[string]Component{}
 
 	for _, selector := range app.Configuration.Components {
-		app.Components[selector] = app.NewComponent(appDir+"/"+app.ComponentsDir+"/"+selector, true)
-	}
-
-	for k, v := range app.Routes {
-		if _, ok := app.Components[v]; !ok {
-			fmt.Printf("Component '%s' for route '%s' doesn't exist", v, k)
-			delete(app.Components, v)
-		}
-	}
-
-	for _, comp := range app.Components {
-		comp.LoadTree(comp.Node)
-		comp.CompileToFile(app.TmpDirectory, false)
-		comp.PreLoad()
+		compDir := appDir + "/" + app.ComponentsDir + "/" + selector
+		compConf := &ComponentConfiguration{}
+		readConfiguration(compDir+"/config.json", compConf)
+		app.Components[selector] = *app.NewComponent(compDir, compConf)
 	}
 
 	return app
+}
+
+func (a *App) HandleFunc(path string, pre func(http.ResponseWriter, *http.Request)) {
+	var f func(string, http.ResponseWriter, *http.Request)
+	f = func(path string, w http.ResponseWriter, r *http.Request) {
+		c := a.Components[a.Configuration.Routes["/"]]
+
+		c.Execute(Data{})
+		c.ExecuteTemplate(w, Data{})
+	}
+	a.Router.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		pre(w, r)
+		f(path, w, r)
+	})
+}
+
+func (a *App) GeneratePages() {
+	compConf := &ComponentConfiguration{
+		Selector:    "index",
+		TemplateUrl: a.IndexFile,
+		Shadow:      false,
+	}
+
+	c := a.NewComponent(a.Directory, compConf)
+	c.KeepBodyWrapper = true
+	c.AppendStyles = true
+	c.Execute(Data{})
+	c.Copy(a.DistDirectory)
+
+	for k, v := range a.Routes {
+		if _, ok := a.Components[v]; ok {
+
+		} else {
+			fmt.Printf("Component '%s' for route '%s' doesn't exist", v, k)
+		}
+	}
+}
+
+func (a *App) GenerateComponents() {
+
 }
 
 func (a *App) ClearTmpDir() {
@@ -76,16 +108,4 @@ func (a *App) ClearTmpDir() {
 
 func (a *App) ClearDistDir() {
 	os.RemoveAll(a.DistDirectory)
-}
-
-func (a *App) HandleFunc(path string, pre func(http.ResponseWriter, *http.Request)) {
-	var f func(string, http.ResponseWriter, *http.Request)
-	f = func(path string, w http.ResponseWriter, r *http.Request) {
-		c := a.Components[a.Configuration.Routes["/"]]
-		c.Execute(w)
-	}
-	a.Router.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		pre(w, r)
-		f(path, w, r)
-	})
 }
