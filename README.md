@@ -1,4 +1,3 @@
 # gogular
-This project is under active development.
+This project is in alpha and is under active development.
 
-Please check back in a day for updates.

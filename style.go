@@ -47,10 +47,13 @@ func (s *Style) Parse() {
 }
 
 func (s *Style) EmbedNodes(shadowId string, doc *goquery.Document) {
+	existingRules := []*css.Rule{}
 	for _, rule := range s.Rules {
 		oldClassName := rule.Prelude
 
+		// todo: if it doesnt find remove
 		doc.Find(rule.Prelude).Each(func(i int, sel *goquery.Selection) {
+			existingRules = append(existingRules, rule)
 			if s.Shadow {
 				className, ok := s.RuleMap[rule]
 
@@ -72,6 +75,8 @@ func (s *Style) EmbedNodes(shadowId string, doc *goquery.Document) {
 			}
 		})
 	}
+
+	s.Rules = existingRules
 }
 
 func (s *Style) Minify(destDir string, originalName bool) {

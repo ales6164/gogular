@@ -106,6 +106,8 @@ func (c *Component) Execute(data Data) {
 		node := s.Nodes[0]
 		if node.Type == html.ElementNode {
 			if c2, is := c.App.Components[node.Data]; is {
+				fmt.Println("found", node.Data)
+
 				data := Data{}
 				data.Attr = getAttributes(node.Attr)
 
