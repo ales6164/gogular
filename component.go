@@ -71,6 +71,9 @@ func (a *App) NewComponent(dir string, conf *ComponentConfiguration) *Component 
 		s := a.NewStyle(fileName, dir, c.Configuration.Shadow)
 		s.Parse()
 		c.Styles = append(c.Styles, s)
+
+		fmt.Println(c.Configuration.Selector)
+		fmt.Println(len(c.Styles))
 	}
 
 	c.App = a
@@ -106,7 +109,6 @@ func (c *Component) Execute(data Data) {
 		node := s.Nodes[0]
 		if node.Type == html.ElementNode {
 			if c2, is := c.App.Components[node.Data]; is {
-				fmt.Println("found", node.Data)
 
 				data := Data{}
 				data.Attr = getAttributes(node.Attr)

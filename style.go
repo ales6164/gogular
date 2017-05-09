@@ -5,8 +5,6 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/aymerick/douceur/parser"
 	"fmt"
-	"github.com/tdewolff/minify"
-	css_min "github.com/tdewolff/minify/css"
 	"bytes"
 )
 
@@ -51,7 +49,6 @@ func (s *Style) EmbedNodes(shadowId string, doc *goquery.Document) {
 	for _, rule := range s.Rules {
 		oldClassName := rule.Prelude
 
-		// todo: if it doesnt find remove
 		doc.Find(rule.Prelude).Each(func(i int, sel *goquery.Selection) {
 			existingRules = append(existingRules, rule)
 			if s.Shadow {
@@ -77,18 +74,4 @@ func (s *Style) EmbedNodes(shadowId string, doc *goquery.Document) {
 	}
 
 	s.Rules = existingRules
-}
-
-func (s *Style) Minify(destDir string, originalName bool) {
-	m := minify.New()
-	m.AddFunc("text/css", css_min.Minify)
-
-	oldF := s.Open()
-	newF := s.Create()
-	defer oldF.Close()
-	defer newF.Close()
-
-	if err := m.Minify("text/css", newF, oldF); err != nil {
-		fmt.Print(err)
-	}
 }

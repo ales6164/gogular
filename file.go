@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"io"
 	"bytes"
+
 )
 
 type TmpFile struct {
@@ -59,11 +60,15 @@ func (f *TmpFile) GetBuffer() *bytes.Buffer {
 	return buf
 }
 
-func (f *TmpFile) Copy(dest string) {
+func (f *TmpFile) Copy(dest string, dos ...func(dest io.Writer, src io.Reader)) {
 	osF := f.Open()
 	newF, err := os.Create(dest + "/" + f.Filename)
 	defer osF.Close()
 	defer newF.Close()
+
+	for _, do := range dos {
+		do(newF, osF)
+	}
 
 	if err != nil {
 		fmt.Println(err)

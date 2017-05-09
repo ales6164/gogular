@@ -15,6 +15,7 @@ type App struct {
 	*mux.Router
 
 	Components map[string]Component
+	Ids        map[string]bool
 
 	Directory     string
 	DistDirectory string
@@ -26,6 +27,9 @@ type App struct {
 type Configuration struct {
 	Name      string
 	IndexFile string
+
+	StaticDirs  []string
+	StaticFiles []string
 
 	ComponentsDir string
 	Components    []string
@@ -47,15 +51,31 @@ func NewApp(appDir string) *App {
 	os.RemoveAll(app.TmpDirectory)
 
 	os.Mkdir(app.DistDirectory, os.ModePerm)
-	os.Mkdir(app.DistDirectory + "/c", os.ModePerm)
+	os.Mkdir(app.DistDirectory+"/c", os.ModePerm)
 	os.Mkdir(app.TmpDirectory, os.ModePerm)
 
-	app.Configuration = &Configuration{}
-	readConfiguration(appDir+"/config.json", app.Configuration)
+	app.ReadConfiguration()
 
 	app.BuildComponents()
 
+	app.CopyStatic()
+
 	return app
+}
+
+func (a *App) ReadConfiguration() {
+	a.Configuration = &Configuration{}
+	readConfiguration(a.Directory+"/config.json", a.Configuration)
+}
+
+func (a *App) CopyStatic() {
+	for _, path := range a.StaticFiles {
+		f := a.NewTempFile(a.Directory + "/" + path)
+		f.Copy(a.DistDirectory)
+	}
+	for _, path := range a.StaticDirs {
+		copy_folder(a.Directory+"/"+path, a.DistDirectory+"/"+path)
+	}
 }
 
 func (a *App) HandleFunc(path string, pre func(http.ResponseWriter, *http.Request)) {
@@ -75,26 +95,26 @@ func (a *App) HandleFunc(path string, pre func(http.ResponseWriter, *http.Reques
 func (a *App) buildRoute(route string, index *Component, page *Component) {
 	index.Parse()
 
-	index.Document.Find(a.Configuration.RouteSelector).Each(func(_ int, s *goquery.Selection){
-		fmt.Println("replacing")
+	index.Document.Find(a.Configuration.RouteSelector).Each(func(_ int, s *goquery.Selection) {
 		s.ReplaceWithHtml(
-		"<" + page.Configuration.Selector + "></" + page.Configuration.Selector + ">",
+			`<div data-router><` + page.Configuration.Selector + `></` + page.Configuration.Selector + `></div`,
 		)
 	})
 
 	index.Execute(Data{})
 
-	if len(route) <= 1 {
-		index.Copy(a.DistDirectory)
-	} else {
-		index.Filename = page.Configuration.Selector
-		index.Copy(a.DistDirectory)
+
+	if len(route) > 1 {
+		index.Filename = route + "/index.html"
+
+		os.Mkdir(a.DistDirectory+"/"+route, os.ModePerm)
 	}
+	index.Copy(a.DistDirectory, MinifyHtml)
 
 	// also save bare page component
 	page.Execute(Data{})
-	page.Filename = page.Configuration.Selector
-	page.Copy(a.DistDirectory + "/c")
+	page.Filename = route + "/template.html"
+	page.Copy(a.DistDirectory, MinifyHtml)
 }
 
 func (a *App) BuildPages() {
@@ -128,6 +148,7 @@ func (a *App) BuildComponents() {
 		compConf := &ComponentConfiguration{}
 		readConfiguration(compDir+"/config.json", compConf)
 		a.Components[selector] = *a.NewComponent(compDir, compConf)
+
 	}
 }
 
